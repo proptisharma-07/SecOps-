@@ -29,8 +29,14 @@ jobs:
               echo "Application Source Successfully checked out"
               echo "Checked Out Commit SHA:" 
               git -C application rev-parse HEAD
-
+          
           - name: Scan for Application Secrets
-            uses: gitleaks/gitleaks-action@v2
-            env:
-              GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+            run : |
+              docker run --rm \
+                -v "${GITHUB_WORKSPACE}/application:/repo" \
+                ghcr.io/gitleaks/gitleaks:v8.30.1 \
+                detect \
+                -- source=/repo \
+                --no-banner \
+                --exit-code 1
+              
