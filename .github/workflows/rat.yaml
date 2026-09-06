@@ -29,3 +29,8 @@ jobs:
               echo "Application Source Successfully checked out"
               echo "Checked Out Commit SHA:" 
               git -C application rev-parse HEAD
+
+          - name: Scan for Application Secrets
+            uses: gitleaks/gitleaks-action@v2
+            env:
+              GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
