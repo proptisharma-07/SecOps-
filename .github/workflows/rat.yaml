@@ -37,7 +37,6 @@ jobs:
                 ghcr.io/zricethezav/gitleaks:latest \
                 detect \
                 -- source=/repo \
-                -- no-git \
                 --no-banner \
                 --exit-code 1
               
