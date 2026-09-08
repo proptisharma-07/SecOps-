@@ -30,13 +30,14 @@ jobs:
               echo "Checked Out Commit SHA:" 
               git -C application rev-parse HEAD
           
-          - name: Scan for Application Secrets
-            run : |
+          - name: Step 4 - Scan for Application Secrets
+            run: |
               docker run --rm \
                 -v "${GITHUB_WORKSPACE}/application:/repo" \
-                ghcr.io/zricethezav/gitleaks:latest \
+                ghcr.io/gitleaks/gitleaks:latest \
                 detect \
-                -- source=/repo \
+                --source=/repo \
+                --no-git \
                 --no-banner \
                 --exit-code 1
 
