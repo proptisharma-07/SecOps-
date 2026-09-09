@@ -1,4 +1,4 @@
-name: Step 2 - Receive Application Trigger
+name: SecOps pipeline
 
 on:
   repository_dispatch:
@@ -6,8 +6,9 @@ on:
       - application_push
 
 jobs:
-  receive-trigger:
-    name: Verify Cross-Repo Communication
+  # Stage 1: secret scanning
+  gitleaks:
+    name: Gitleaks Secret Scanning
     runs-on: ubuntu-latest
 
     steps:
@@ -49,8 +50,33 @@ jobs:
             --exit-code 1
 
       - name: Step 4A - List Scanned Files
-        if: always()
+      :
+      - name: Display Received Application Information
+        run: |
+          echo "SecOps Repo received Application trigger"
+          echo "Application Repository: ${{ github.event.client_payload.repository }}"
+          echo "Application Branch: ${{ github.event.client_payload.branch }}"
+          echo "Application Commit SHA: ${{ github.event.client_payload.commit_sha }}"
+
+      - name: Checkout Exact Application Commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.repository }}
+          ref: ${{ github.event.client_payload.commit_sha }}  if: always()
         run: |
           echo "Files Inside Gitleaks Scanning Scope:"
           echo "------------------------------------"
           find application -type f -print
+
+
+# Stage 2: Dependency Scanning
+...
+trivy:
+    name: Trivy - Dependency Scanning
+    runs-on: ubuntu-latest
+    needs: gitleaks
+
+    steps:
+      - run: "Trivy Testing Workflows"
+
+    
