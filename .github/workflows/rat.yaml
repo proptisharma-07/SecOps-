@@ -11,7 +11,7 @@ jobs:
     name: Gitleaks Secret Scanning
     runs-on: ubuntu-latest
 
-    steps:
+  steps:
       - name: Display Received Application Information
         run: |
           echo "SecOps Repo received Application trigger"
