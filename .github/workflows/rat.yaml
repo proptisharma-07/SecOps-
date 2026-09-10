@@ -3,20 +3,15 @@ name: SecOps Pipeline
 on:
   repository_dispatch:
     types:
-      - application-push
+      - application_push
 
 jobs:
-
-  # ============================================================
-  # Stage 2: Trivy Dependency Scan
-  # ============================================================
-
-  trivy:
-    name: Trivy Dependency Scan
+  # Stage 1 : Secret Scanning
+  gitleaks:
+    name: Gitleaks - Secret Scanning
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Display Received Application Information
         run: |
           echo "SecOps Repo received Application trigger"
@@ -33,86 +28,126 @@ jobs:
 
       - name: Verify Checked Out Commit
         run: |
-          echo "Application Source Successfully Checked Out"
+          echo "Application Source Successfully checked out"
           echo "Checked Out Commit SHA:"
           git -C application rev-parse HEAD
 
-      # --------------------------------------------------------
-      # Step 1: Run Trivy Dependency Scan
-      # --------------------------------------------------------
-
-      - name: Step 1 - Run Trivy Dependency Scan
+      - name: Step 4 - Scan for Application Secrets
         run: |
           docker run --rm \
-            -v "${GITHUB_WORKSPACE}/application:/app" \
+            -v "${GITHUB_WORKSPACE}/application:/repo" \
+            ghcr.io/gitleaks/gitleaks:latest \
+            detect \
+            --source=/repo \
+            --no-git \
+            --no-banner \
+            --report-format json \
+            --report-path /repo/gitleaks-report.json \
+            --exit-code 1
+
+      - name: Step 4B - Show Detected Secrets
+        if: always()
+        run: |
+          echo "Gitleaks Findings:"
+          echo "====================================="
+          if [ -f "application/gitleaks-report.json" ]; then
+            cat application/gitleaks-report.json | jq -r '
+              .[] | "File: \(.File)\nLine: \(.StartLine)\nRule: \(.RuleID)\nSecret: \(.Match)\nCommit: \(.Commit // "N/A")\n---"
+            '
+          else
+            echo "No report file found — either no secrets were detected or the scan did not run."
+          fi
+
+      - name: Step 4A - List Scanned Files
+        run: |
+          echo "Files Inside Gitleaks Scanning Scope:"
+          echo "====================================="
+          find application -type f -print
+
+  # Stage 2 : Dependency Scanning
+  trivy-deps:
+    name: Trivy - Dependency Scanning
+    runs-on: ubuntu-latest
+    needs: gitleaks
+
+    steps:
+      - name: Display Received Application Information
+        run: |
+          echo "SecOps Repo received Application trigger for dependency scan"
+          echo "Application Repository: ${{ github.event.client_payload.repository }}"
+          echo "Application Branch: ${{ github.event.client_payload.branch }}"
+          echo "Application Commit SHA: ${{ github.event.client_payload.commit_sha }}"
+
+      - name: Checkout Exact Application Commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.repository }}
+          ref: ${{ github.event.client_payload.commit_sha }}
+          path: application
+
+      - name: Verify Checked Out Commit
+        run: |
+          echo "Application Source Successfully checked out"
+          echo "Checked Out Commit SHA:"
+          git -C application rev-parse HEAD
+
+      - name: Step 1 - Scan Dependencies for Vulnerabilities
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/application:/repo" \
             -v "${GITHUB_WORKSPACE}/trivy-cache:/root/.cache/" \
             aquasec/trivy:latest \
             fs \
-            /app \
+            /repo \
+            --scanners vuln \
+            --severity CRITICAL,HIGH \
+            --format table \
+            --exit-code 1
+
+      - name: Step 2 - Generate JSON Report of Findings
+        if: always()
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/application:/repo" \
+            -v "${GITHUB_WORKSPACE}/trivy-cache:/root/.cache/" \
+            aquasec/trivy:latest \
+            fs \
+            /repo \
             --scanners vuln \
             --severity CRITICAL,HIGH \
             --format json \
-            --output /app/trivy-report.json \
-            --exit-code 1
-
-      # --------------------------------------------------------
-      # Step 2: Check Trivy Report
-      # --------------------------------------------------------
-
-      - name: Step 2 - Check Trivy Report
-        if: always()
-        run: |
-          if [ -f "application/trivy-report.json" ]; then
-            echo "Trivy report generated successfully."
-          else
-            echo "Trivy report was not generated."
-          fi
-
-      # --------------------------------------------------------
-      # Step 3: Show Vulnerability Summary
-      # --------------------------------------------------------
+            --output /repo/trivy-fs-report.json \
+            --exit-code 0
 
       - name: Step 3 - Show Vulnerability Summary
         if: always()
         run: |
           echo "Trivy Dependency Findings:"
           echo "====================================="
-
-          if [ -f "application/trivy-report.json" ]; then
-            jq -r '
-              .Results[]?
-              | select(.Vulnerabilities != null)
-              | .Vulnerabilities[]
-              | "Package: \(.PkgName)\nInstalled: \(.InstalledVersion)\nFixed In: \(.FixedVersion // "N/A")\nSeverity: \(.Severity)\nCVE: \(.VulnerabilityID)\n---"
-            ' application/trivy-report.json
+          if [ -f "application/trivy-fs-report.json" ]; then
+            cat application/trivy-fs-report.json | jq -r '
+              .Results[]? | select(.Vulnerabilities != null) |
+              .Vulnerabilities[] |
+              "Package: \(.PkgName)\nInstalled: \(.InstalledVersion)\nFixed In: \(.FixedVersion // "N/A")\nSeverity: \(.Severity)\nCVE: \(.VulnerabilityID)\n---"
+            '
           else
             echo "No report file found — either no vulnerable dependencies were detected or the scan did not run."
           fi
 
-      # --------------------------------------------------------
-      # Step 4: Upload Trivy Report
-      # --------------------------------------------------------
-
-      - name: Step 4 - Upload Trivy Report Artifact
+      - name: Upload Trivy FS Report Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-dependency-report
-          path: application/trivy-report.json
-          if-no-files-found: warn
+          path: application/trivy-fs-report.json
 
-
-  # ============================================================
-  # Stage 3: Docker Image Build + Image Scanning
-  # ============================================================
-
+  # Stage 3 : Docker Image Build + Image Scanning
   build-and-scan-image:
     name: Build & Scan Docker Image
     runs-on: ubuntu-latest
-    needs: trivy
+    needs: trivy-deps
 
     steps:
-
       - name: Display Received Application Information
         run: |
           echo "SecOps Repo received Application trigger for image build & scan"
@@ -129,14 +164,11 @@ jobs:
 
       - name: Verify Checked Out Commit
         run: |
-          echo "Application Source Successfully Checked Out"
+          echo "Application Source Successfully checked out"
           echo "Checked Out Commit SHA:"
           git -C application rev-parse HEAD
 
-      # --------------------------------------------------------
-      # Step 1: Build Docker Image
-      # --------------------------------------------------------
-
+      # Build the Docker image from the application's Dockerfile
       - name: Step 1 - Build Docker Image
         run: |
           docker build \
@@ -144,10 +176,7 @@ jobs:
             -f application/backend/Dockerfile \
             application/backend
 
-      # --------------------------------------------------------
-      # Step 2: Scan Docker Image
-      # --------------------------------------------------------
-
+      # Scan the freshly built image for OS + library vulnerabilities
       - name: Step 2 - Scan Docker Image for Vulnerabilities
         run: |
           docker run --rm \
@@ -159,10 +188,6 @@ jobs:
             --severity CRITICAL,HIGH \
             --format table \
             --exit-code 1
-
-      # --------------------------------------------------------
-      # Step 3: Generate JSON Image Report
-      # --------------------------------------------------------
 
       - name: Step 3 - Generate JSON Report of Image Findings
         if: always()
@@ -176,37 +201,27 @@ jobs:
             hireflow-backend:${{ github.event.client_payload.commit_sha }} \
             --severity CRITICAL,HIGH \
             --format json \
-            --output /output/trivy-image-report.json
-
-      # --------------------------------------------------------
-      # Step 4: Show Image Vulnerability Summary
-      # --------------------------------------------------------
+            --output /output/trivy-image-report.json \
+            --exit-code 0
 
       - name: Step 4 - Show Image Vulnerability Summary
         if: always()
         run: |
-          echo "Trivy Docker Image Findings:"
+          echo "Trivy Image Scan Findings:"
           echo "====================================="
-
           if [ -f "trivy-image-report.json" ]; then
-            jq -r '
-              .Results[]?
-              | select(.Vulnerabilities != null)
-              | .Vulnerabilities[]
-              | "Package: \(.PkgName)\nInstalled: \(.InstalledVersion)\nFixed In: \(.FixedVersion // "N/A")\nSeverity: \(.Severity)\nCVE: \(.VulnerabilityID)\n---"
-            ' trivy-image-report.json
+            cat trivy-image-report.json | jq -r '
+              .Results[]? | select(.Vulnerabilities != null) |
+              .Vulnerabilities[] |
+              "Package: \(.PkgName)\nInstalled: \(.InstalledVersion)\nFixed In: \(.FixedVersion // "N/A")\nSeverity: \(.Severity)\nCVE: \(.VulnerabilityID)\n---"
+            '
           else
-            echo "No image vulnerability report found."
+            echo "No report file found — either no vulnerabilities were detected or the scan did not run."
           fi
 
-      # --------------------------------------------------------
-      # Step 5: Upload Image Scan Report
-      # --------------------------------------------------------
-
-      - name: Step 5 - Upload Image Scan Report Artifact
+      - name: Upload Trivy Image Report Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-image-report
           path: trivy-image-report.json
-          if-no-files-found: warn
