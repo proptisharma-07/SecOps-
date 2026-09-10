@@ -1,3 +1,73 @@
+name: SecOps Pipeline
+
+on:
+  repository_dispatch:
+    types:
+      - application-push
+
+jobs:
+
+  # ============================================================
+  # Stage 2: Trivy Dependency Scan
+  # ============================================================
+
+  trivy:
+    name: Trivy Dependency Scan
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Display Received Application Information
+        run: |
+          echo "SecOps Repo received Application trigger"
+          echo "Application Repository: ${{ github.event.client_payload.repository }}"
+          echo "Application Branch: ${{ github.event.client_payload.branch }}"
+          echo "Application Commit SHA: ${{ github.event.client_payload.commit_sha }}"
+
+      - name: Checkout Exact Application Commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.repository }}
+          ref: ${{ github.event.client_payload.commit_sha }}
+          path: application
+
+      - name: Verify Checked Out Commit
+        run: |
+          echo "Application Source Successfully Checked Out"
+          echo "Checked Out Commit SHA:"
+          git -C application rev-parse HEAD
+
+      # --------------------------------------------------------
+      # Step 1: Run Trivy Dependency Scan
+      # --------------------------------------------------------
+
+      - name: Step 1 - Run Trivy Dependency Scan
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/application:/app" \
+            -v "${GITHUB_WORKSPACE}/trivy-cache:/root/.cache/" \
+            aquasec/trivy:latest \
+            fs \
+            /app \
+            --scanners vuln \
+            --severity CRITICAL,HIGH \
+            --format json \
+            --output /app/trivy-report.json \
+            --exit-code 1
+
+      # --------------------------------------------------------
+      # Step 2: Check Trivy Report
+      # --------------------------------------------------------
+
+      - name: Step 2 - Check Trivy Report
+        if: always()
+        run: |
+          if [ -f "application/trivy-report.json" ]; then
+            echo "Trivy report generated successfully."
+          else
+            echo "Trivy report was not generated."
+          fi
+
       # --------------------------------------------------------
       # Step 3: Show Vulnerability Summary
       # --------------------------------------------------------
